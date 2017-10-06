@@ -781,8 +781,27 @@ set_ram_duration_target(
         AvgEgressRate + AvgIngressRate + AvgAckEgressRate + AvgAckIngressRate,
     TargetRamCount1 =
         case DurationTarget of
-            infinity  -> infinity;
-            _         -> trunc(DurationTarget * Rate) %% msgs = sec * msgs/sec
+            infinity  ->
+                case AvgIngressRate > AvgEgressRate of
+                    true ->
+                        % rabbit_log:error("Ingress ~p~n, Egress ~p~n Target ~p~n Ram count ~p~n", [AvgIngressRate, AvgEgressRate,DurationTarget,TargetRamCount]),
+                        %% Producers outpace consumers.
+                        %% No point of removing ram limit.
+                        case TargetRamCount of
+                            infinity ->
+                                case ram_duration(State) of
+                                    {infinity, _}     -> infinity;
+                                    {SelfDuration, _} -> trunc(SelfDuration * Rate)
+                                end;
+                            _        -> TargetRamCount
+                        end;
+                    false ->
+                        % rabbit_log:error("LOWER: Ingress ~p~n, Egress ~p~n Target ~p~n", [AvgIngressRate, AvgEgressRate, DurationTarget]),
+                        infinity
+                end;
+            _ ->
+                % rabbit_log:error("SET: Ingress ~p~n, Egress ~p~n Target ~p~n", [AvgIngressRate, AvgEgressRate, DurationTarget]),
+                trunc(DurationTarget * Rate) %% msgs = sec * msgs/sec
         end,
     State1 = State #vqstate { target_ram_count = TargetRamCount1 },
     a(case TargetRamCount1 == infinity orelse
@@ -2363,8 +2382,9 @@ reduce_memory_use(State = #vqstate {
                                                 out     = AvgEgress,
                                                 ack_in  = AvgAckIngress,
                                                 ack_out = AvgAckEgress } }) ->
+    Chunk1 = chunk_size(RamMsgCount + gb_trees:size(RPA), TargetRamCount),
     State1 = #vqstate { q2 = Q2, q3 = Q3 } =
-        case chunk_size(RamMsgCount + gb_trees:size(RPA), TargetRamCount) of
+        case Chunk1 of
             0  -> State;
             %% Reduce memory of pending acks and alphas. The order is
             %% determined based on which is growing faster. Whichever
@@ -2401,7 +2421,19 @@ reduce_memory_use(State = #vqstate {
                 State1
         end,
     %% See rabbitmq-server-290 for the reasons behind this GC call.
-    garbage_collect(),
+    GCCount1 = case Chunk1 > TargetRamCount of
+        true -> garbage_collect(),
+                0;
+        false ->
+            case get(gc_count) of
+                undefined -> 0;
+                GCCount when GCCount == 1000 ->
+                    garbage_collect(),
+                    0;
+                GCCount -> GCCount + 1
+            end
+    end,
+    put(gc_count, GCCount1),
     State3;
 %% When using lazy queues, there are no alphas, so we don't need to
 %% call push_alphas_to_betas/2.
