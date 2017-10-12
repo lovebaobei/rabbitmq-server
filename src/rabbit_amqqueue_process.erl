@@ -1456,7 +1456,6 @@ handle_info({bump_credit, Msg}, State = #q{backing_queue       = BQ,
     noreply(State#q{backing_queue_state = BQ:resume(BQS)});
 handle_info(bump_reduce_memory_use, State = #q{backing_queue       = BQ,
                                                backing_queue_state = BQS}) ->
-    put(waiting_bump, false),
     noreply(State#q{backing_queue_state = BQ:resume(BQS)});
 
 handle_info(Info, State) ->
